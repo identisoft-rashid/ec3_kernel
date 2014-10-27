@@ -24,10 +24,14 @@ source "drivers/gpu/ipu-v3/Kconfig"
 
 menu "Direct Rendering Manager"
 source "drivers/gpu/drm/Kconfig"
+source "drivers/video/fbtft/Kconfig"
+
 endmenu
 
 menu "Frame buffer Devices"
 source "drivers/video/fbdev/Kconfig"
+source "drivers/video/fbtft/Kconfig"
+
 endmenu
 
 source "drivers/video/backlight/Kconfig"
@@ -51,5 +55,7 @@ if FB || SGI_NEWPORT_CONSOLE
 
 endif
 
+
+source "drivers/video/fbtft/Kconfig"
 
 endmenu
