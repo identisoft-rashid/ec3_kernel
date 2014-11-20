@@ -326,7 +326,7 @@ static int tscadc_suspend(struct device *dev)
 static int tscadc_resume(struct device *dev)
 {
 	struct ti_tscadc_dev	*tscadc_dev = dev_get_drvdata(dev);
-	u32 ctrl;
+	u32 restore, ctrl;
 
 	pm_runtime_get_sync(dev);
 
