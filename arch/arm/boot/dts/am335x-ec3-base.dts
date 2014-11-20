@@ -80,6 +80,58 @@
 		pwms = <&ehrpwm1 1 250000 0>;
 	};
 
+	panel {
+		compatible = "ti,tilcdc,panel";
+		pinctrl-names = "default";
+		pinctrl-0 = <&lcd_pins>;
+		status = "okay";
+		panel-info {
+			ac-bias           = <255>;
+			ac-bias-intrpt    = <0>;
+			dma-burst-sz      = <16>;
+			bpp               = <24>;
+			fdd               = <0x80>;
+			sync-edge         = <0>;
+			sync-ctrl         = <1>;
+			raster-order      = <0>;
+			fifo-th           = <0>;
+			invert-pxl-clk;
+		};
+		/* HX8257A */
+		display-timings {
+      480x272 {
+				hactive         = <480>;
+				vactive         = <272>;
+				hback-porch     = <2>;
+				hfront-porch    = <2>;
+				hsync-len       = <41>;
+				vback-porch     = <2>;
+				vfront-porch    = <2>;
+				vsync-len       = <10>;
+				clock-frequency = <9000000>;
+				hsync-active    = <0>;
+				vsync-active    = <0>;
+			};
+		};
+		/* evmsk */
+/*		display-timings {
+      native-mode = <&timing0>;
+      timing0: 480x640 {
+				hactive         = <480>;
+				vactive         = <272>;
+				hback-porch     = <43>;
+				hfront-porch    = <8>;
+				hsync-len       = <4>;
+				vback-porch     = <12>;
+				vfront-porch    = <4>;
+				vsync-len       = <10>;
+				clock-frequency = <9000000>;
+				hsync-active    = <0>;
+				vsync-active    = <0>;
+			};
+		};*/
+	};
+
 	bandgap {
 		reg = <0x44e10448 0x4 0x44e1044C 0x4>;
 		compatible = "ti,omap4430-bandgap";
@@ -483,7 +535,7 @@
 	tsc {
 		ti,wires = <4>;
 		ti,x-plate-resistance = <200>;
-		ti,coordinate-readouts = <5>;
+		ti,coordiante-readouts = <5>;
 		ti,wire-config = <0x00 0x11 0x22 0x33>;
 	};
 
@@ -493,23 +545,6 @@
 };
 
 &lcdc {
-	pinctrl-names = "default";
-	pinctrl-0 = <&lcd_pins>;
 	status = "okay";
-	display-timings {
-		480x272 {
-			hactive         = <480>;
-			vactive         = <272>;
-			hback-porch     = <43>;
-			hfront-porch    = <8>;
-			hsync-len       = <4>;
-			vback-porch     = <12>;
-			vfront-porch    = <4>;
-			vsync-len       = <10>;
-			clock-frequency = <9000000>;
-			hsync-active    = <0>;
-			vsync-active    = <0>;
-		};
-	};
 };
 
