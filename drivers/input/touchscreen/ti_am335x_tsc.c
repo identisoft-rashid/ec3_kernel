@@ -14,6 +14,7 @@
  */
 
 
+#include <linux/init.h>
 #include <linux/kernel.h>
 #include <linux/err.h>
 #include <linux/module.h>
@@ -51,7 +52,6 @@ struct titsc {
 	u32			config_inp[4];
 	u32			bit_xp, bit_xn, bit_yp, bit_yn;
 	u32			inp_xp, inp_xn, inp_yp, inp_yn;
-	u32			step_mask;
 };
 
 static unsigned int titsc_readl(struct titsc *ts, unsigned int reg)
@@ -121,8 +121,11 @@ static void titsc_step_config(struct titsc *ts_dev)
 {
 	unsigned int	config;
 	int i;
-	int end_step;
+	int end_step, first_step, total_steps;
 	u32 stepenable;
+
+	total_steps = ts_dev->coordinate_readouts * 2 + 2;
+	first_step = 16 - total_steps;	// result should be 0-15
 
 	config = STEPCONFIG_MODE_HWSYNC |
 			STEPCONFIG_AVG_16 | ts_dev->bit_xp;
@@ -140,12 +143,15 @@ static void titsc_step_config(struct titsc *ts_dev)
 		break;
 	}
 
-	/* 1 … coordinate_readouts is for X */
-	end_step = ts_dev->coordinate_readouts;
-	for (i = 0; i < end_step; i++) {
+	/* coordinate_readouts + 3 … coordinate_readouts*2 + 2  is for X */
+	end_step = first_step + ts_dev->coordinate_readouts * 2 + 2;
+	for (i = first_step + ts_dev->coordinate_readouts+2; i < end_step; i++) {
 		titsc_writel(ts_dev, REG_STEPCONFIG(i), config);
-		titsc_writel(ts_dev, REG_STEPDELAY(i), STEPCONFIG_OPENDLY);
+		titsc_writel(ts_dev, REG_STEPDELAY(i), STEPDELAY_OPEN(1));
 	}
+
+	// overwrite first X OpenDelay to provide more time for signals to settle
+	titsc_writel(ts_dev, REG_STEPDELAY(first_step+ts_dev->coordinate_readouts+2), STEPCONFIG_OPENDLY);
 
 	config = 0;
 	config = STEPCONFIG_MODE_HWSYNC |
@@ -164,22 +170,26 @@ static void titsc_step_config(struct titsc *ts_dev)
 		break;
 	}
 
-	/* coordinate_readouts … coordinate_readouts * 2 is for Y */
-	end_step = ts_dev->coordinate_readouts * 2;
-	for (i = ts_dev->coordinate_readouts; i < end_step; i++) {
+	/* 1 … coordinate_readouts is for Y */
+	end_step = first_step + ts_dev->coordinate_readouts;
+	for (i = first_step; i < end_step; i++) {
 		titsc_writel(ts_dev, REG_STEPCONFIG(i), config);
-		titsc_writel(ts_dev, REG_STEPDELAY(i), STEPCONFIG_OPENDLY);
+		titsc_writel(ts_dev, REG_STEPDELAY(i), STEPDELAY_OPEN(1));
 	}
+
+	// overwrite first Y OpenDelay to provide more time for signals to settle
+	titsc_writel(ts_dev, REG_STEPDELAY(first_step), STEPCONFIG_OPENDLY);
 
 	/* Charge step configuration */
 	config = ts_dev->bit_xp | ts_dev->bit_yn |
 			STEPCHARGE_RFP_XPUL | STEPCHARGE_RFM_XNUR |
 			STEPCHARGE_INM_AN1 | STEPCHARGE_INP(ts_dev->inp_yp);
 
+	config = titsc_readl(ts_dev, REG_IDLECONFIG);
 	titsc_writel(ts_dev, REG_CHARGECONFIG, config);
-	titsc_writel(ts_dev, REG_CHARGEDELAY, CHARGEDLY_OPENDLY);
+	titsc_writel(ts_dev, REG_CHARGEDELAY, 0x400);
 
-	/* coordinate_readouts * 2 … coordinate_readouts * 2 + 2 is for Z */
+	/* coordinate_readouts + 1 … coordinate_readouts + 2 is for Z */
 	config = STEPCONFIG_MODE_HWSYNC |
 			STEPCONFIG_AVG_16 | ts_dev->bit_yp |
 			ts_dev->bit_xn | STEPCONFIG_INM_ADCREFM |
@@ -192,63 +202,105 @@ static void titsc_step_config(struct titsc *ts_dev)
 	config |= STEPCONFIG_INP(ts_dev->inp_yn);
 	titsc_writel(ts_dev, REG_STEPCONFIG(end_step), config);
 	titsc_writel(ts_dev, REG_STEPDELAY(end_step),
-			STEPCONFIG_OPENDLY);
+			STEPDELAY_OPEN(1));
 
-	/* The steps1 … end and bit 0 for TS_Charge */
-	stepenable = (1 << (end_step + 2)) - 1;
-	ts_dev->step_mask = stepenable;
-	am335x_tsc_se_set_cache(ts_dev->mfd_tscadc, ts_dev->step_mask);
+	/* Enable steps */
+	stepenable = 1;  // Set bit 0 for TS_Charge step
+	for (i=0; i<total_steps; i++) {
+		stepenable |= 1 << (first_step + i + 1);
+	}
+	am335x_tsc_se_set_cont(ts_dev->mfd_tscadc, stepenable);
 }
 
 static void titsc_read_coordinates(struct titsc *ts_dev,
 		u32 *x, u32 *y, u32 *z1, u32 *z2)
 {
 	unsigned int fifocount = titsc_readl(ts_dev, REG_FIFO0CNT);
-	unsigned int prev_val_x = ~0, prev_val_y = ~0;
-	unsigned int prev_diff_x = ~0, prev_diff_y = ~0;
-	unsigned int read, diff;
-	unsigned int i, channel;
+	unsigned int min_x, max_x, x_vals[7], x_cnt=0, x_sum=0;
+	unsigned int min_y, max_y, y_vals[7], y_cnt=0, y_sum=0;
+
+	unsigned int i, read, channel;
 	unsigned int creads = ts_dev->coordinate_readouts;
 
 	*z1 = *z2 = 0;
 	if (fifocount % (creads * 2 + 2))
 		fifocount -= fifocount % (creads * 2 + 2);
-	/*
-	 * Delta filter is used to remove large variations in sampled
-	 * values from ADC. The filter tries to predict where the next
-	 * coordinate could be. This is done by taking a previous
-	 * coordinate and subtracting it form current one. Further the
-	 * algorithm compares the difference with that of a present value,
-	 * if true the value is reported to the sub system.
-	 */
-	for (i = 0; i < fifocount; i++) {
-		read = titsc_readl(ts_dev, REG_FIFO0);
 
+	/* Read 1st Y coordinate */
+	read = titsc_readl(ts_dev, REG_FIFO0);
+	channel = (read & 0xf0000) >> 16;
+	read &= 0xfff;
+	min_y = read;
+	max_y = read;
+
+	/* Read remaining Y coordinates, keep min/max separate */
+	for (i=1; i < creads; i++) {
+		read = titsc_readl(ts_dev, REG_FIFO0);
 		channel = (read & 0xf0000) >> 16;
 		read &= 0xfff;
-		if (channel < creads) {
-			diff = abs(read - prev_val_x);
-			if (diff < prev_diff_x) {
-				prev_diff_x = diff;
-				*x = read;
+
+		if ( (read>max_y) || (read<min_y) ) {
+			if (read > max_y) {			
+				y_vals[y_cnt++] = max_y;
+				max_y = read;
+			} else {
+				y_vals[y_cnt++] = min_y;
+				min_y = read;
 			}
-			prev_val_x = read;
-
-		} else if (channel < creads * 2) {
-			diff = abs(read - prev_val_y);
-			if (diff < prev_diff_y) {
-				prev_diff_y = diff;
-				*y = read;
-			}
-			prev_val_y = read;
-
-		} else if (channel < creads * 2 + 1) {
-			*z1 = read;
-
-		} else if (channel < creads * 2 + 2) {
-			*z2 = read;
+		} else {
+			y_vals[y_cnt++] = read;
 		}
 	}
+
+	/* Discard Y min/max, average remaining samples */
+	for (i=0; i<y_cnt; i++) {
+		y_sum += y_vals[i];
+	}
+	*y = y_sum / y_cnt;
+
+	/* Read Z1 coordinate */
+	read = titsc_readl(ts_dev, REG_FIFO0);
+	channel = (read & 0xf0000) >> 16;
+	read &= 0xfff;
+	*z1 = read;
+
+	/* Read Z2 coordinate */
+	read = titsc_readl(ts_dev, REG_FIFO0);
+	channel = (read & 0xf0000) >> 16;
+	read &= 0xfff;
+	*z2 = read;
+
+	/* Read 1st X coordinate */
+	read = titsc_readl(ts_dev, REG_FIFO0);
+	channel = (read & 0xf0000) >> 16;
+	read &= 0xfff;
+	min_x = read;
+	max_x = read;
+
+	/* Read remaining X coordinates, keep min/max separate */
+	for (i=1; i < creads; i++) {
+		read = titsc_readl(ts_dev, REG_FIFO0);
+		channel = (read & 0xf0000) >> 16;
+		read &= 0xfff;
+		
+		if ( (read>max_x) || (read<min_x) ) {
+			if (read > max_x) {			
+				x_vals[x_cnt++] = max_x;
+				max_x = read;
+			} else {
+				x_vals[x_cnt++] = min_x;
+				min_x = read;
+			}
+		} else {
+			x_vals[x_cnt++] = read;
+		}
+	}
+
+	/* Discard X min/max, average remaining samples */
+	for (i=0; i<x_cnt; i++) {
+		x_sum += x_vals[i];
+	}
+	*x = x_sum / x_cnt;
 }
 
 static irqreturn_t titsc_irq(int irq, void *dev)
@@ -258,13 +310,28 @@ static irqreturn_t titsc_irq(int irq, void *dev)
 	unsigned int status, irqclr = 0;
 	unsigned int x = 0, y = 0;
 	unsigned int z1, z2, z;
-	unsigned int fsm;
 
-	status = titsc_readl(ts_dev, REG_IRQSTATUS);
-	/*
-	 * ADC and touchscreen share the IRQ line.
-	 * FIFO1 interrupts are used by ADC. Handle FIFO0 IRQs here only
-	 */
+	status = titsc_readl(ts_dev, REG_RAWIRQSTATUS);
+
+	if (status & IRQENB_HW_PEN) {
+		ts_dev->pen_down = true;
+		titsc_writel(ts_dev, REG_IRQWAKEUP, 0x00);
+		titsc_writel(ts_dev, REG_IRQCLR, IRQENB_HW_PEN);
+		irqclr |= IRQENB_HW_PEN;
+	}
+
+	if (status & IRQENB_PENUP) {
+		ts_dev->pen_down = false;
+		input_report_key(input_dev, BTN_TOUCH, 0);
+		input_report_abs(input_dev, ABS_PRESSURE, 0);
+		input_sync(input_dev);
+		irqclr |= IRQENB_PENUP;
+	}
+
+	if (status & IRQENB_EOS) {
+		irqclr |= IRQENB_EOS;
+	}
+
 	if (status & IRQENB_FIFO0THRES) {
 
 		titsc_read_coordinates(ts_dev, &x, &y, &z1, &z2);
@@ -292,36 +359,9 @@ static irqreturn_t titsc_irq(int irq, void *dev)
 		irqclr |= IRQENB_FIFO0THRES;
 	}
 
-	/*
-	 * Time for sequencer to settle, to read
-	 * correct state of the sequencer.
-	 */
-	udelay(SEQ_SETTLE);
-
-	status = titsc_readl(ts_dev, REG_RAWIRQSTATUS);
-	if (status & IRQENB_PENUP) {
-		/* Pen up event */
-		fsm = titsc_readl(ts_dev, REG_ADCFSM);
-		if (fsm == ADCFSM_STEPID) {
-			ts_dev->pen_down = false;
-			input_report_key(input_dev, BTN_TOUCH, 0);
-			input_report_abs(input_dev, ABS_PRESSURE, 0);
-			input_sync(input_dev);
-		} else {
-			ts_dev->pen_down = true;
-		}
-		irqclr |= IRQENB_PENUP;
-	}
-
-	if (status & IRQENB_HW_PEN) {
-
-		titsc_writel(ts_dev, REG_IRQWAKEUP, 0x00);
-		titsc_writel(ts_dev, REG_IRQCLR, IRQENB_HW_PEN);
-	}
-
 	if (irqclr) {
 		titsc_writel(ts_dev, REG_IRQSTATUS, irqclr);
-		am335x_tsc_se_set_cache(ts_dev->mfd_tscadc, ts_dev->step_mask);
+		am335x_tsc_se_update(ts_dev->mfd_tscadc, 0);
 		return IRQ_HANDLED;
 	}
 	return IRQ_NONE;
@@ -354,17 +394,14 @@ static int titsc_parse_dt(struct platform_device *pdev,
 		return err;
 
 	/*
-	 * Try with the new binding first. If it fails, try again with
+	 * try with new binding first. If it fails, still try with
 	 * bogus, miss-spelled version.
 	 */
 	err = of_property_read_u32(node, "ti,coordinate-readouts",
 			&ts_dev->coordinate_readouts);
-	if (err < 0) {
-		dev_warn(&pdev->dev, "please use 'ti,coordinate-readouts' instead\n");
+	if (err < 0)
 		err = of_property_read_u32(node, "ti,coordiante-readouts",
 				&ts_dev->coordinate_readouts);
-	}
-
 	if (err < 0)
 		return err;
 
@@ -404,13 +441,13 @@ static int titsc_probe(struct platform_device *pdev)
 	}
 
 	err = request_irq(ts_dev->irq, titsc_irq,
-			  IRQF_SHARED, pdev->dev.driver->name, ts_dev);
+			  0, pdev->dev.driver->name, ts_dev);
 	if (err) {
 		dev_err(&pdev->dev, "failed to allocate irq.\n");
 		goto err_free_mem;
 	}
 
-	titsc_writel(ts_dev, REG_IRQENABLE, IRQENB_FIFO0THRES);
+	titsc_writel(ts_dev, REG_IRQENABLE, IRQENB_EOS);
 	err = titsc_config_wires(ts_dev);
 	if (err) {
 		dev_err(&pdev->dev, "wrong i/p wire configuration\n");
@@ -473,6 +510,9 @@ static int titsc_suspend(struct device *dev)
 
 	tscadc_dev = ti_tscadc_dev_get(to_platform_device(dev));
 	if (device_may_wakeup(tscadc_dev->dev)) {
+		/* Flush any pending interrupts */
+		titsc_writel(ts_dev, REG_IRQSTATUS, 0xffffffff);
+
 		idle = titsc_readl(ts_dev, REG_IRQENABLE);
 		titsc_writel(ts_dev, REG_IRQENABLE,
 				(idle | IRQENB_HW_PEN));
@@ -520,7 +560,7 @@ static struct platform_driver ti_tsc_driver = {
 		.name   = "TI-am335x-tsc",
 		.owner	= THIS_MODULE,
 		.pm	= TITSC_PM_OPS,
-		.of_match_table = ti_tsc_dt_ids,
+		.of_match_table = of_match_ptr(ti_tsc_dt_ids),
 	},
 };
 module_platform_driver(ti_tsc_driver);
