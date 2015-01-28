@@ -1,0 +1,81 @@
+--- drivers/mfd/ti_am335x_tscadc.c
++++ drivers/mfd/ti_am335x_tscadc.c
+@@ -48,58 +48,40 @@
+ 	.val_bits = 32,
+ };
+ 
+-void am335x_tsc_se_set_cache(struct ti_tscadc_dev *tsadc, u32 val)
++void am335x_tsc_se_update(struct ti_tscadc_dev *tsadc, u32 val)
+ {
+ 	unsigned long flags;
+ 
+ 	spin_lock_irqsave(&tsadc->reg_lock, flags);
+-	tsadc->reg_se_cache = val;
+-	if (tsadc->adc_waiting)
+-		wake_up(&tsadc->reg_se_wait);
+-	else if (!tsadc->adc_in_use)
+-		tscadc_writel(tsadc, REG_SE, val);
+-
++	if (tsadc->adc_pending) {
++		tsadc->tsc_pending = true;
++		tsadc->pending_tsc_val = val;
++	} else {
++		tscadc_writel(tsadc, REG_SE, tsadc->reg_se_cache | val);
++	}
+ 	spin_unlock_irqrestore(&tsadc->reg_lock, flags);
+ }
+-EXPORT_SYMBOL_GPL(am335x_tsc_se_set_cache);
++EXPORT_SYMBOL_GPL(am335x_tsc_se_update);
+ 
+-static void am335x_tscadc_need_adc(struct ti_tscadc_dev *tsadc)
++void am335x_tsc_se_set_cont(struct ti_tscadc_dev *tsadc, u32 val)
+ {
+-	DEFINE_WAIT(wait);
+-	u32 reg;
++	unsigned long flags;
+ 
+-	/*
+-	 * disable TSC steps so it does not run while the ADC is using it. If
+-	 * write 0 while it is running (it just started or was already running)
+-	 * then it completes all steps that were enabled and stops then.
+-	 */
+-	tscadc_writel(tsadc, REG_SE, 0);
+-	reg = tscadc_readl(tsadc, REG_ADCFSM);
+-	if (reg & SEQ_STATUS) {
+-		tsadc->adc_waiting = true;
+-		prepare_to_wait(&tsadc->reg_se_wait, &wait,
+-				TASK_UNINTERRUPTIBLE);
+-		spin_unlock_irq(&tsadc->reg_lock);
+-
+-		schedule();
+-
+-		spin_lock_irq(&tsadc->reg_lock);
+-		finish_wait(&tsadc->reg_se_wait, &wait);
+-
+-		reg = tscadc_readl(tsadc, REG_ADCFSM);
+-		WARN_ON(reg & SEQ_STATUS);
+-		tsadc->adc_waiting = false;
+-	}
+-	tsadc->adc_in_use = true;
++	spin_lock_irqsave(&tsadc->reg_lock, flags);
++	tsadc->reg_se_cache |= val;
++	spin_unlock_irqrestore(&tsadc->reg_lock, flags);
++	am335x_tsc_se_update(tsadc, 0);
+ }
++EXPORT_SYMBOL_GPL(am335x_tsc_se_set_cont);
+ 
+ void am335x_tsc_se_set_once(struct ti_tscadc_dev *tsadc, u32 val)
+ {
+-	spin_lock_irq(&tsadc->reg_lock);
+-	am335x_tscadc_need_adc(tsadc);
++	unsigned long flags;
+ 
+-	tscadc_writel(tsadc, REG_SE, val);
+-	spin_unlock_irq(&tsadc->reg_lock);
++	spin_lock_irqsave(&tsadc->reg_lock, flags);
++	tsadc->adc_pending = true;
++	tscadc_writel(tsadc, REG_SE, tsadc->reg_se_cache | val);
++	spin_unlock_irqrestore(&tsadc->reg_lock, flags);
+ }
+ EXPORT_SYMBOL_GPL(am335x_tsc_se_set_once);
+ 

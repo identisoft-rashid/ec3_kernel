@@ -49,6 +49,7 @@ static const struct regmap_config tscadc_regmap_config = {
 };
 
 void am335x_tsc_se_update(struct ti_tscadc_dev *tsadc, u32 val)
+
 {
 	unsigned long flags;
 
@@ -59,6 +60,7 @@ void am335x_tsc_se_update(struct ti_tscadc_dev *tsadc, u32 val)
 	} else {
 		tscadc_writel(tsadc, REG_SE, tsadc->reg_se_cache | val);
 	}
+
 	spin_unlock_irqrestore(&tsadc->reg_lock, flags);
 }
 EXPORT_SYMBOL_GPL(am335x_tsc_se_update);
@@ -77,6 +79,8 @@ EXPORT_SYMBOL_GPL(am335x_tsc_se_set_cont);
 void am335x_tsc_se_set_once(struct ti_tscadc_dev *tsadc, u32 val)
 {
 	unsigned long flags;
+
+//	tsadc->reg_se_cache |= val; // ???
 
 	spin_lock_irqsave(&tsadc->reg_lock, flags);
 	tsadc->adc_pending = true;
