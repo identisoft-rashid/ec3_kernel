@@ -73,10 +73,22 @@
 		};
 	};
 
-	genInput {
+	antiTamper2 {
 		compatible = "gpio-keys";
 		pinctrl-names = "default";
 		pinctrl-0 = <&button3_pin>;
+
+		antitamper2 {
+			gpios = <&gpio1 29 GPIO_ACTIVE_HIGH>;
+			linux,code = <66>;
+			debounce-interval = <200>;
+		};
+	};
+
+	genInput {
+		compatible = "gpio-keys";
+		pinctrl-names = "default";
+		pinctrl-0 = <&button4_pin>;
 
 		genInput {
 			gpios = <&gpio3 20 GPIO_ACTIVE_HIGH>;
@@ -196,6 +208,12 @@
 
 	button3_pin: pinmux_button3_pin {
 		pinctrl-single,pins = <
+			0x7c	(PIN_INPUT_PULLUP | MUX_MODE7)	/* gpmc_csn0.gpio1_29 */
+		>;
+	};
+
+	button4_pin: pinmux_button4_pin {
+		pinctrl-single,pins = <
 			0x1a8 (PIN_INPUT_PULLUP | MUX_MODE7)	/* mcasp0_axr1.gpio3_20 */
 		>;
 	};
@@ -250,7 +268,6 @@
 			0x68	(PIN_INPUT_PULLUP | MUX_MODE7)	/* gpmc_a10.gpio1_26 */
 			0x6C	(PIN_INPUT_PULLUP | MUX_MODE7)	/* gpmc_a11.gpio1_27 */
 			0x78	(PIN_INPUT_PULLUP | MUX_MODE7)	/* gpmc_ben1.gpio1_28 */
-			0x7c	(PIN_INPUT_PULLUP | MUX_MODE7)	/* gpmc_csn0.gpio1_29 */
 
 			0x90	(PIN_INPUT_PULLUP | MUX_MODE7)	/* gpmc_advn_ale.gpio2_2 */
 			0x94	(PIN_INPUT_PULLUP | MUX_MODE7)	/* gpmc_oen_ren.gpio2_3 */
